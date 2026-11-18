@@ -6285,7 +6285,7 @@ VisualState GetVisualState() {
     
     // E. Construct Result
     vs.TotalRotation = (float)totalAngle;
-    vs.FreeRotationDeg = primaryPane.editState.FreeRotationDeg;
+    vs.FreeRotationDeg = primaryPane.view.FreeRotationDeg;
     vs.IsRotated90 = isRotated90or270;
     vs.FlipX = finalFlipX ? -1.0f : 1.0f;
     vs.FlipY = finalFlipY ? -1.0f : 1.0f;

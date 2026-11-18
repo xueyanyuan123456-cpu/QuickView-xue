@@ -6632,6 +6632,9 @@ std::wstring GetMouseActionTargetName(::MouseActionTarget action) {
     case MouseActionTarget::CropRegionDrag: {
         return PickLang({ L"Draw Crop Box", L"框选裁切", L"框選裁切", L"範囲選択クロップ", L"Выделение области кадрирования", L"Zuschneidebereich aufziehen", L"Dibujar área de recorte", L"Tracer zone de recadrage" });
     }
+    case MouseActionTarget::Rotate: {
+        return PickLang({ L"Free Rotate", L"自由旋转", L"自由旋轉", L"自由回転", L"Свободный поворот", L"Freie Drehung", L"Rotación libre", L"Rotation libre" });
+    }
     case MouseActionTarget::NavNext:          return GetHotkeyActionName(HotkeyAction::NavNext);
     case MouseActionTarget::NavPrev:          return GetHotkeyActionName(HotkeyAction::NavPrev);
     case MouseActionTarget::NavFirst:         return GetHotkeyActionName(HotkeyAction::NavFirst);

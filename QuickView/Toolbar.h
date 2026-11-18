@@ -11,7 +11,8 @@ enum class ToolbarButtonID {
     None,
     Prev, Next, 
     RotateL, RotateR, FlipH, 
-    LockSize, Gallery, 
+    LockSize, Gallery,
+    Favorite,
     Exif, RawToggle, FixExtension,
     GamutWarning,
     Pin,
@@ -111,6 +112,7 @@ public:
 
     // State Setters
     void SetLockState(bool locked);
+    void SetFavoriteState(bool favorited);
     void SetExifState(bool open);
     void SetRawState(bool isRaw, bool isFullDecode, bool isPaired = false);
     void SetExtensionWarning(bool hasMismatch);

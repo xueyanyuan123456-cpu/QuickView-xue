@@ -2,6 +2,7 @@
 #include "AppStrings.h"
 #include "GalleryOverlay.h"
 #include "RatingStore.h"
+#include "FavoritesStore.h"
 #include "Toolbar.h"
 #include "ThumbnailManager.h"
 #include "ImageTypes.h"
@@ -19,6 +20,7 @@ extern HWND g_mainHwnd;
 extern bool IsLightThemeActive();
 extern float g_uiScale;
 extern RatingStore g_ratingStore;
+extern FavoritesStore g_favorites;
 extern Toolbar g_toolbar;
 extern RuntimeConfig g_runtime;
 extern std::wstring& g_imagePath;
@@ -141,14 +143,62 @@ void GalleryOverlay::Initialize(ThumbnailManager* pThumbMgr, FileNavigator* pNav
         m_preferredCellWidth = (float)std::clamp(g_config.GalleryThumbnailSize, 80, 300);
 }
 
+// ---------------------------------------------------------------------------
+// Favorites-mode accessors: index resolves to the bookmarked list when active,
+// otherwise to the current folder navigator.
+// ---------------------------------------------------------------------------
+int GalleryOverlay::GetItemCount() const {
+    if (m_favoritesMode) return (int)m_favPaths.size();
+    return m_pNav ? (int)m_pNav->Count() : 0;
+}
+
+std::wstring GalleryOverlay::GetItemPath(int index) const {
+    if (m_favoritesMode) {
+        if (index >= 0 && index < (int)m_favPaths.size()) return m_favPaths[index];
+        return {};
+    }
+    return m_pNav ? m_pNav->GetFile(index) : std::wstring{};
+}
+
+ImageID GalleryOverlay::GetItemId(int index) const {
+    if (m_favoritesMode) return FileNavigator::PathToImageID(GetItemPath(index));
+    return m_pNav ? m_pNav->GetImageID(index) : 0;
+}
+
+std::wstring GalleryOverlay::GetSelectedPath() const {
+    return GetItemPath(m_selectedIndex);
+}
+
+void GalleryOverlay::SetFavoritesMode(bool enabled) {
+    if (m_favoritesMode == enabled) return;
+    m_favoritesMode = enabled;
+    if (enabled) {
+        m_favPaths = g_favorites.List();
+    }
+    m_scrollTop = 0.0f;
+    m_scrollLeft = 0.0f;
+    m_targetScrollLeft = -1.0f;
+    m_hoverIndex = -1;
+    m_selectedIndex = -1;
+    if (enabled) {
+        if (!m_favPaths.empty()) m_selectedIndex = 0;
+    } else if (m_pNav) {
+        m_selectedIndex = std::clamp(m_pNav->Index(), 0, (int)m_pNav->Count() - 1);
+    }
+    m_needsEnsureVisible = true;
+    RequestRepaint(QuickView::PaintLayer::Gallery);
+}
+
 void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode, bool freezeDismissal) {
     if (m_pNav) {
         m_pNav->EnsureMaterialized();
         m_pNav->SyncWithExplorer();
     }
-    if (!m_pNav || m_pNav->Count() == 0) return;
-    if (currentIndex < 0 || currentIndex >= (int)m_pNav->Count()) {
-        currentIndex = (std::max)(m_pNav->Index(), 0);
+    if (m_favoritesMode) m_favPaths = g_favorites.List(); // refresh bookmark snapshot on open
+    const int count = GetItemCount();
+    if (count == 0) return;
+    if (currentIndex < 0 || currentIndex >= count) {
+        currentIndex = m_pNav ? (std::max)(m_pNav->Index(), 0) : 0;
     }
     
     m_mode = targetMode;
@@ -413,7 +463,7 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
 
         // Follow navigator index only when it *changes* (and is valid). A directory
         // Initialize leaves Index() == -1; do not clobber arrow-key selection every tick.
-        if (m_pNav) {
+        if (m_pNav && !m_favoritesMode) {
             int navIdx = m_pNav->Index();
             if (navIdx != m_lastSyncedNavIndex) {
                 m_lastSyncedNavIndex = navIdx;
@@ -491,12 +541,13 @@ void GalleryOverlay::DiscardDeviceResources() {
 void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
                              ID2D1CommandList *pBgCmdList,
                              const D2D1_MATRIX_3X2_F &bgTransform) {
-    if (!pDC || !m_pNav || m_pNav->Count() == 0) return;
+    if (!pDC) return;
+    if (!m_favoritesMode && GetItemCount() == 0) return;
     if (m_mode == GalleryMode::Hidden && m_transitionProgress <= 0.001f) return;
 
     // Ensure all D2D device brushes are initialized atomically regardless of render branches
     CreateDeviceResources(pDC);
-    if (!IsVisible() || !m_pThumbMgr || !m_pNav) return;
+    if (!IsVisible() || !m_pThumbMgr) return;
     
     // Dynamic columns calculation based on preferred thumbnail size and available width
     float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
@@ -659,8 +710,21 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         }
     }
     
-    size_t count = m_pNav->Count();
-    if (count == 0) return;
+    size_t count = GetItemCount();
+    if (count == 0) {
+        // Favorites mode with an empty bookmark list: show a centered hint
+        // instead of an empty panel.
+        if (m_favoritesMode && m_textFormatStats) {
+            D2D1_RECT_F hintRect = D2D1::RectF(0.0f, galleryH * 0.35f, size.width, galleryH * 0.35f + 40.0f * scale);
+            m_brushText->SetOpacity(0.55f * m_transitionProgress);
+            m_textFormatStats->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pDC->DrawText(L"No favorites yet", 16, m_textFormatStats.Get(), hintRect, m_brushText.Get(),
+                D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            m_textFormatStats->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_brushText->SetOpacity(1.0f);
+        }
+        return;
+    }
     
     // Save state
     D2D1_MATRIX_3X2_F originalTransform;
@@ -763,8 +827,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         const float thumbCornerRadius = std::round(6.0f * scale);
         
         // Draw thumbnail
-        ImageID imgId = m_pNav->GetImageID(i);
-        const std::wstring& path = m_pNav->GetFile(i);
+        ImageID imgId = GetItemId(i);
+        const std::wstring path = GetItemPath(i);
         auto bmp = m_pThumbMgr->GetThumbnail(imgId, path.c_str(), pDC);
         
         if (bmp) {
@@ -831,7 +895,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             if (m_isZooming) {
                 rating = g_ratingStore.TryGet(imgId);
             } else {
-                const FileNavigator::PairedRaw* ratingRaw = m_pNav->GetPairedRaw(imgId);
+                const FileNavigator::PairedRaw* ratingRaw = (m_pNav && !m_favoritesMode) ? m_pNav->GetPairedRaw(imgId) : nullptr;
                 rating = g_ratingStore.TryGetOrQueueRead(
                     imgId, path,
                     ratingRaw ? std::wstring_view(ratingRaw->path) : std::wstring_view{});
@@ -865,7 +929,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         // [RAW+JPEG Pairing] "+CR3"-style badge: this item carries a hidden
         // RAW. Theme-independent dark chip so it reads on any photo content.
         if (m_brushBg && m_brushText && m_textFormatBadge) {
-            if (const FileNavigator::PairedRaw* pairedRaw = m_pNav->GetPairedRaw(imgId)) {
+            if (const FileNavigator::PairedRaw* pairedRaw = (m_pNav && !m_favoritesMode) ? m_pNav->GetPairedRaw(imgId) : nullptr) {
                 const std::wstring badgeText = FileNavigator::PairedRawLabel(*pairedRaw);
                 const float bw = (8.0f + 6.5f * (float)badgeText.length()) * g_uiScale;
                 const float bh = 15.0f * g_uiScale;
@@ -910,9 +974,9 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         D2D1_RECT_F cellRect = GetItemRect(m_hoverIndex, size.width);
         
         if (cellRect.right >= 0.0f && cellRect.left <= size.width && cellRect.bottom >= 0.0f && cellRect.top <= galleryH) {
-            ImageID imgId = m_pNav->GetImageID(m_hoverIndex);
+            ImageID imgId = GetItemId(m_hoverIndex);
             ThumbnailManager::ImageInfo info = m_pThumbMgr->GetImageInfo(imgId);
-            const std::wstring& path = m_pNav->GetFile(m_hoverIndex);
+            const std::wstring path = GetItemPath(m_hoverIndex);
             size_t lastSlash = path.find_last_of(L"\\/");
             std::wstring_view filename = (lastSlash != std::wstring::npos) ? std::wstring_view(path).substr(lastSlash + 1) : std::wstring_view(path);
             
@@ -928,7 +992,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
                 swprintf_s(statsBuf, L"Loading...");
             }
             // [RAW+JPEG Pairing] Flag the hidden RAW in the hover stats
-            if (const FileNavigator::PairedRaw* pairedRaw = m_pNav->GetPairedRaw(imgId); pairedRaw && !info.isFailed) {
+            if (const FileNavigator::PairedRaw* pairedRaw = (m_pNav && !m_favoritesMode) ? m_pNav->GetPairedRaw(imgId) : nullptr; pairedRaw && !info.isFailed) {
                 wcscat_s(statsBuf, L"  •  ");
                 wcscat_s(statsBuf, FileNavigator::PairedRawLabel(*pairedRaw).c_str());
             }
@@ -1278,6 +1342,33 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
                 D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
         }
         
+        // --- Favorites toggle (left end of the FullGrid bottom bar) ---
+        {
+            float favSize = 14.0f * scale;
+            float favX = 16.0f * scale;
+            float favY = barCenterY - favSize / 2.0f;
+            D2D1_RECT_F favRect = D2D1::RectF(favX, favY, favX + favSize, favY + favSize);
+
+            if (m_favoritesMode) {
+                m_brushSelection->SetOpacity(opacityFinal);
+                QuickView::UI::GeekIconRenderer::DrawVectorIcon(pDC, GeekIcons::StarVector, favRect, m_brushSelection.Get());
+            } else {
+                m_brushText->SetColor(txtClr);
+                m_brushText->SetOpacity(opacityFinal * (m_favHover ? 0.75f : 0.55f));
+                QuickView::UI::GeekIconRenderer::DrawVectorIcon(pDC, GeekIcons::StarVector, favRect, m_brushText.Get());
+            }
+
+            if (m_textFormatStats) {
+                m_textFormatStats->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                D2D1_RECT_F favLabel = D2D1::RectF(favX + favSize + 6.0f * scale, barCenterY - 8.0f * scale,
+                    favX + favSize + 110.0f * scale, barCenterY + 8.0f * scale);
+                m_brushText->SetColor(m_favoritesMode ? accClr : txtClr);
+                m_brushText->SetOpacity(opacityFinal * (m_favoritesMode ? 1.0f : 0.55f));
+                pDC->DrawText(L"Favorites", 9, m_textFormatStats.Get(), favLabel, m_brushText.Get(),
+                    D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
+        }
+
         // --- Close button ---
         float closeSize = 14.0f * scale;
         float closeX = size.width - 20.0f * scale - closeSize;
@@ -1395,7 +1486,7 @@ bool GalleryOverlay::OnKeyDown(UINT key) {
             break;
         case VK_RIGHT:
             if (m_isPinned && m_mode == GalleryMode::Filmstrip) return false;
-            m_selectedIndex = std::min((int)m_pNav->Count() - 1, m_selectedIndex + 1);
+            m_selectedIndex = std::min(GetItemCount() - 1, m_selectedIndex + 1);
             EnsureVisible(m_selectedIndex, m_lastSize, true);
             break;
         case VK_UP:
@@ -1406,7 +1497,7 @@ bool GalleryOverlay::OnKeyDown(UINT key) {
             return false;
         case VK_DOWN:
             if (m_mode == GalleryMode::FullGrid) {
-                m_selectedIndex = std::min((int)m_pNav->Count() - 1, m_selectedIndex + m_cols);
+                m_selectedIndex = std::min(GetItemCount() - 1, m_selectedIndex + m_cols);
                 break;
             }
             return false;
@@ -1470,6 +1561,10 @@ bool GalleryOverlay::OnLButtonDown(int x, int y) {
         float pinY = 16.0f * g_uiScale;
         if (fx >= pinX && fx <= pinX + pinSize && fy >= pinY && fy <= pinY + pinSize) {
             TogglePin();
+            // [Feature] Persist the pin state so the gallery reopens in the same
+            // pinned/unpinned state on the next launch.
+            g_config.GalleryPinned = m_isPinned;
+            SaveConfig();
             RequestRepaint(QuickView::PaintLayer::Gallery);
             return true;
         }
@@ -1516,6 +1611,18 @@ bool GalleryOverlay::OnLButtonDown(int x, int y) {
         float barY = galleryH - barH;
         
         if (fy >= barY) {
+            // Favorites toggle button (left end of the bottom bar)
+            {
+                float favSize = 14.0f * scale;
+                float favX = 16.0f * scale;
+                float favHitRight = favX + favSize + 100.0f * scale;
+                float favCY = barY + barH / 2.0f;
+                if (fx >= favX - 4.0f * scale && fx <= favHitRight && fabsf(fy - favCY) < 12.0f * scale) {
+                    SetFavoritesMode(!m_favoritesMode);
+                    return true;
+                }
+            }
+
             // Close button
             float closeSize = 14.0f * scale;
             float closeX = m_lastSize.width - 20.0f * scale - closeSize;
@@ -1664,6 +1771,18 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
             changed = true;
         }
         
+        // Favorites toggle hover
+        {
+            float favSize = 14.0f * scale;
+            float favX = 16.0f * scale;
+            float favHitRight = favX + favSize + 100.0f * scale;
+            bool favHover = (fx >= favX - 4.0f * scale && fx <= favHitRight && fabsf(fy - barCenterY) < 12.0f * scale && fy >= barY);
+            if (favHover != m_favHover) {
+                m_favHover = favHover;
+                changed = true;
+            }
+        }
+
         // Slider hover
         float sliderW = 120.0f * scale;
         float sliderCx = m_lastSize.width / 2.0f;
@@ -1709,10 +1828,11 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
         }
     } else {
         // Reset hover states when not in FullGrid
-        if (m_gridCloseHover || m_gridSliderHover || m_gridAutoHover) {
+        if (m_gridCloseHover || m_gridSliderHover || m_gridAutoHover || m_favHover) {
             m_gridCloseHover = false;
             m_gridSliderHover = false;
             m_gridAutoHover = false;
+            m_favHover = false;
             changed = true;
         }
     }
@@ -1903,7 +2023,7 @@ D2D1_RECT_F GalleryOverlay::GetItemRect(int index, float winW) const {
 }
 
 int GalleryOverlay::HitTest(float x, float y) {
-    size_t count = m_pNav ? m_pNav->Count() : 0;
+    size_t count = GetItemCount();
     if (count == 0) return -1;
     
     if (m_gridProgress < 0.2f) {

@@ -115,6 +115,7 @@ using namespace Microsoft::WRL;
 #include "FileNavigator.h"
 #include "GalleryOverlay.h"
 #include "RatingStore.h"
+#include "FavoritesStore.h"
 #include "Toolbar.h"
 #include "SettingsOverlay.h"
 #include "HelpOverlay.h"
@@ -739,7 +740,21 @@ static constexpr UINT_PTR IDT_SVG_RERENDER = 44; // [SVG Lossless] Timer for laz
 static constexpr UINT_PTR IDT_INTERACTION = 1001; // Interaction debounce for HQ redraw/surface upgrade
 
 static constexpr UINT_PTR IDT_SMOOTH_ZOOM = 1003; // Drive transform-only smooth zoom animation
+static constexpr UINT_PTR IDT_NAV_TRANSITION = 1004; // [Feature] Slide transition when switching images
 static constexpr UINT_PTR BORDER_GLOW_TIMER_ID = 3005; // Pan/zoom edge vignette glow fade timer
+
+// [Feature] Navigation slide transition state. The new image eases in from the
+// switch direction; when the user holds Left/Right to flip through images
+// rapidly, the measured interval shortens the animation duration automatically.
+struct NavTransitionState {
+    bool Active = false;
+    int Direction = 0;            // -1 previous, +1 next
+    float Progress = 0.0f;         // 0..1
+    DWORD StartTick = 0;
+    float DurationMs = 260.0f;
+    DWORD LastNavTick = 0;
+};
+static NavTransitionState g_navTransition;
 
 
 // Phase 2: Queue Drop Debounce (single-slot sliding window)
@@ -3580,6 +3595,23 @@ static void FinishGallery(HWND hwnd, GalleryFinishKind kind, int commitIndex) {
 
     if (kind == GalleryFinishKind::Commit) {
         g_savedState.isValid = false;
+
+        // Favorites mode: the selected item lives in the bookmark list, which may
+        // point outside the current folder navigator. Open it directly.
+        if (g_gallery.IsFavoritesMode()) {
+            const std::wstring favPath = g_gallery.GetSelectedPath();
+            g_gallery.SetFavoritesMode(false);
+            if (!favPath.empty() && favPath != pane.path) {
+                if (g_compEngine && g_compEngine->IsInitialized()) {
+                    g_compEngine->HideActiveImage();
+                }
+                pane.resource.Reset();
+                LoadImageAsync(hwnd, favPath.c_str());
+            }
+            g_gallerySession = {};
+            return;
+        }
+
         if (commitIndex >= 0 && commitIndex < (int)pane.navigator.Count()) {
             const std::wstring path = pane.navigator.GetFile(commitIndex);
             const std::wstring resolved = pane.navigator.GetResolvedPath(path);
@@ -5293,6 +5325,7 @@ void FlushConfigSnapshotToDiskLocked(
     sec.AddInt(L"NavIndicator", cfg.NavIndicator);
     sec.AddBool(L"EnableCrossMonitor", cfg.EnableCrossMonitor);
     sec.AddBool(L"RoundedCorners", cfg.RoundedCorners);
+    sec.AddBool(L"GalleryPinned", cfg.GalleryPinned);
     for (size_t i = 0; i < 6; ++i) {
         if (lastWinVals[i][0] != L'\0') {
             sec.AddString(kLastWindowKeys[i], lastWinVals[i]);
@@ -5651,6 +5684,7 @@ void LoadConfig() {
         { L"View",     L"ShowOSD",                            &AppConfig::ShowOSD,                            true },
         { L"View",     L"AutoHideWindowControls",             &AppConfig::AutoHideWindowControls,             true },
         { L"View",     L"LockBottomToolbar",                  &AppConfig::LockBottomToolbar,                  false },
+        { L"View",     L"GalleryPinned",                       &AppConfig::GalleryPinned,                       false },
         { L"View",     L"KeepWindowSizeOnNav",                &AppConfig::KeepWindowSizeOnNav,                false },
         { L"View",     L"RememberLastWindowSizeAndPosition",  &AppConfig::RememberLastWindowSizeAndPosition,  false },
         { L"View",     L"UpscaleSmallImagesWhenLocked",       &AppConfig::UpscaleSmallImagesWhenLocked,       false },
@@ -5923,9 +5957,8 @@ void LoadConfig() {
             g_config.SetMouseGesture(0, 0, MouseTrigger::HorizontalWheel, MouseActionTarget::Zoom);
             g_config.SetMouseGesture(static_cast<uint8_t>(MouseModifier::Shift), 0, MouseTrigger::VerticalWheel, MouseActionTarget::Zoom);
         }
-        if (!g_config.RightButtonDragZoom) {
-            g_config.SetMouseGesture(0, 0, MouseTrigger::RightDrag, MouseActionTarget::None);
-        }
+        // [Feature] Right-button drag now rotates the image freely around its center.
+        g_config.SetMouseGesture(0, 0, MouseTrigger::RightDrag, MouseActionTarget::Rotate);
         if (g_config.DoubleClickMode == 1) {
             g_config.SetMouseGesture(0, 0, MouseTrigger::LeftDblClick, MouseActionTarget::ToggleWheelSwapMode);
         } else if (g_config.DoubleClickMode == 2) {
@@ -6252,6 +6285,7 @@ VisualState GetVisualState() {
     
     // E. Construct Result
     vs.TotalRotation = (float)totalAngle;
+    vs.FreeRotationDeg = primaryPane.editState.FreeRotationDeg;
     vs.IsRotated90 = isRotated90or270;
     vs.FlipX = finalFlipX ? -1.0f : 1.0f;
     vs.FlipY = finalFlipY ? -1.0f : 1.0f;
@@ -8089,6 +8123,24 @@ void SyncDCompState([[maybe_unused]] HWND hwnd, float winW, float winH, [[maybe_
             // Fix #6: Pin mode — shift main image down by half of gallery filmstrip height
             displayPanY += galleryH / 2.0f;
 
+            // [Feature] Advance the navigation slide transition and apply an eased
+            // horizontal offset so the new image glides in from the switch side.
+            float navSlideX = 0.0f;
+            if (g_navTransition.Active) {
+                const float elapsed = (float)(GetTickCount() - g_navTransition.StartTick);
+                const float t = std::clamp(elapsed / g_navTransition.DurationMs, 0.0f, 1.0f);
+                g_navTransition.Progress = t;
+                if (t >= 1.0f) {
+                    g_navTransition.Active = false;
+                    KillTimer(hwnd, IDT_NAV_TRANSITION);
+                } else {
+                    SetTimer(hwnd, IDT_NAV_TRANSITION, 16, nullptr);
+                }
+                const float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); // easeOutCubic
+                navSlideX = (1.0f - ease) * (float)g_navTransition.Direction * winW * 0.16f;
+            }
+            displayPanX += navSlideX;
+
             if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
                 VisualState surfaceVs{};
                 float currentScale = 1.0f;
@@ -9298,6 +9350,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
 
     // Load config (Must happen before ETW because logs check g_config)
     LoadConfig();
+    g_favorites.Initialize();
     AppStrings::Init();
     AppStrings::SetLanguage((AppStrings::Language)g_config.Language);
 
@@ -9612,6 +9665,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
     g_toolbar.SetExifState(g_runtime.ShowInfoPanel);
     g_toolbar.SetPinned(g_config.LockBottomToolbar); // Lock toolbar from config
     if (g_config.LockBottomToolbar) g_toolbar.SetVisible(true);
+
+    // [Feature] Restore the filmstrip gallery pin state saved before last shutdown.
+    g_gallery.SetPinned(g_config.GalleryPinned);
     
     if (g_isBootingWithImage) {
         SetTimer(hwnd, TIMER_ID_STARTUP_SHOW, 1500, nullptr); // Safe 1500ms failsafe timeout for huge/RAW images
@@ -11630,6 +11686,8 @@ static bool ExecuteMouseActionTarget(HWND hwnd, MouseActionTarget action, POINT 
     case MouseActionTarget::ToggleWheelPanMode:
         ExecuteToggleWheelPanMode(hwnd);
         return true;
+    case MouseActionTarget::Rotate:
+        return true; // free-form right-drag rotation; handled in WM_MOUSEMOVE
     default:
         return false;
     }
@@ -11673,6 +11731,7 @@ static void CancelPendingButtonDragForHold(HWND hwnd, uint8_t holdMask) {
         if (view.IsRightButtonDown || view.IsRightButtonDragZoom) {
             view.IsRightButtonDown = false;
             view.IsRightButtonDragZoom = false;
+            view.IsRightDragRotate = false;
             view.RightDragZoomStartScreenPos = { 0, 0 };
             view.RightDragZoomStartTotalScale = 1.0f;
             g_hasRightDragZoomStartViews = false;
@@ -11856,6 +11915,7 @@ static void FinishCustomMouseDrag(HWND hwnd, MouseActionTarget act) {
     } else if (act == MouseActionTarget::Zoom) {
         GetPaneContext(PaneSlot::Primary).view.IsRightButtonDragZoom = false;
         GetPaneContext(PaneSlot::Primary).view.IsRightButtonDown = false;
+        GetPaneContext(PaneSlot::Primary).view.IsRightDragRotate = false;
         GetPaneContext(PaneSlot::Primary).view.RightDragZoomStartScreenPos = { 0, 0 };
         GetPaneContext(PaneSlot::Primary).view.RightDragZoomStartTotalScale = 1.0f;
         g_hasRightDragZoomStartViews = false;
@@ -13013,6 +13073,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
             } else {
                 KillTimer(hwnd, IDT_SLIDESHOW);
+            }
+            return 0;
+        }
+
+        if (wParam == IDT_NAV_TRANSITION) {
+            // [Feature] Drive the switch-animation frames until the transition completes.
+            if (g_navTransition.Active) {
+                RequestRepaint(PaintLayer::All);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            } else {
+                KillTimer(hwnd, IDT_NAV_TRANSITION);
             }
             return 0;
         }
@@ -14367,6 +14438,21 @@ SKIP_EDGE_NAV:;
                           GetPaneContext(PaneSlot::Primary).view.CursorDragStart = cursorPos;
                           GetPaneContext(PaneSlot::Primary).view.IsMiddleDragWindow = true;
                       }
+                  } else if (g_customMouseDrag.action == MouseActionTarget::Rotate) {
+                      // [Feature] Right-button drag: free-form rotate around the image center.
+                      auto& view = GetPaneContext(PaneSlot::Primary).view;
+                      if (GetPaneContext(PaneSlot::Primary).resource) {
+                          view.IsRightButtonDragZoom = true;
+                          view.IsRightDragRotate = true;
+                          view.LastMousePos = pt;
+                          view.DragStartPos = g_customMouseDrag.startPt;
+                          view.DragStartTime = g_customMouseDrag.startTime;
+                          RECT rc; GetClientRect(hwnd, &rc);
+                          const float cx = (rc.right - rc.left) / 2.0f + view.PanX;
+                          const float cy = (rc.bottom - rc.top) / 2.0f + view.PanY;
+                          view.RightDragStartAngle = atan2f((float)(pt.y) - cy, (float)(pt.x) - cx) * 180.0f / 3.14159265358979323846f;
+                          view.RightDragStartRotation = view.FreeRotationDeg;
+                      }
                   } else if (g_customMouseDrag.action == MouseActionTarget::Zoom) {
                       if (GetPaneContext(PaneSlot::Primary).resource) {
                           POINT cursorPos{};
@@ -14445,7 +14531,21 @@ SKIP_EDGE_NAV:;
          }
 
          if (GetPaneContext(PaneSlot::Primary).view.IsRightButtonDragZoom) {
-             GetPaneContext(PaneSlot::Primary).view.LastMousePos = pt;
+             auto& view = GetPaneContext(PaneSlot::Primary).view;
+             view.LastMousePos = pt;
+
+             // [Feature] Free-form rotation: follow the cursor around the image center.
+             if (view.IsRightDragRotate) {
+                 RECT rc; GetClientRect(hwnd, &rc);
+                 const float cx = (rc.right - rc.left) / 2.0f + view.PanX;
+                 const float cy = (rc.bottom - rc.top) / 2.0f + view.PanY;
+                 const float ang = atan2f((float)pt.y - cy, (float)pt.x - cx) * 180.0f / 3.14159265358979323846f;
+                 view.FreeRotationDeg = view.RightDragStartRotation + (ang - view.RightDragStartAngle);
+                 view.IsInteracting = true;
+                 SetTimer(hwnd, IDT_INTERACTION, 150, nullptr);
+                 RequestRepaint(PaintLayer::Dynamic);
+                 return 0;
+             }
 
              if (IsCompareModeActive()) {
                  POINT cursorPos{};
@@ -15973,6 +16073,14 @@ SKIP_EDGE_NAV:;
                 case ToolbarButtonID::Gallery:
                     HandleHotkeyAction(hwnd, HotkeyAction::ToggleGallery);
                     break;
+                case ToolbarButtonID::Favorite: {
+                    // [Feature] Toggle the current image in the favorites store.
+                    bool nowFav = g_favorites.Toggle(g_imagePath);
+                    g_toolbar.SetFavoriteState(nowFav);
+                    g_osd.Show(hwnd, nowFav ? L"Added to favorites" : L"Removed from favorites", false);
+                    RequestRepaint(PaintLayer::Static);
+                    break;
+                }
                 case ToolbarButtonID::CompareToggle:
                     if (IsCompareModeActive()) {
                         AppContext::GetInstance().CompareCtrl->ExitMode(hwnd);
@@ -16035,6 +16143,7 @@ SKIP_EDGE_NAV:;
                             g_gallery.Close();
                             NotifyGallerySessionEnded();
                         }
+                        g_config.GalleryPinned = g_gallery.IsPinned();
                         SaveConfig();
                         ApplyWindowTheme(hwnd); // Update DWM borders
                         g_toolbar.SetSlideshowMode(true, g_slideshowState.IsPlaying);
@@ -19100,6 +19209,23 @@ void Navigate(HWND hwnd, int direction) {
     QuickView::PendingAction pending = (direction > 0) ? QuickView::PendingAction::NavigateNext : QuickView::PendingAction::NavigatePrev;
     if (!CheckUnsavedChanges(hwnd, pending)) return;
 
+    // [Feature] Kick off the switch animation. Duration adapts to how fast the
+    // user is flipping: a short gap between consecutive navigations (holding an
+    // arrow key) shortens the animation; a deliberate single step uses the base
+    // duration.
+    {
+        const DWORD nowTick = GetTickCount();
+        const DWORD interval = g_navTransition.LastNavTick ? nowTick - g_navTransition.LastNavTick : 260;
+        g_navTransition.LastNavTick = nowTick;
+        const float baseDur = 260.0f;
+        g_navTransition.Active = true;
+        g_navTransition.Direction = direction;
+        g_navTransition.Progress = 0.0f;
+        g_navTransition.StartTick = nowTick;
+        g_navTransition.DurationMs = std::clamp((float)interval * 1.1f, 90.0f, baseDur);
+        SetTimer(hwnd, IDT_NAV_TRANSITION, 16, nullptr);
+    }
+
     // [RAW+JPEG Pairing] Pair-compare session: the arrows move BOTH panes to
     // the neighboring paired photo (left = rendered, right = RAW at full
     // decode), regardless of pane focus. Items without a pair are skipped.
@@ -21321,6 +21447,8 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
             KillTimer(hwnd, IDT_SLIDESHOW);
             if (g_config.SlideshowImmersiveMode == 1) {
                 g_gallery.SetPinned(wasPinned);
+                g_config.GalleryPinned = wasPinned;
+                SaveConfig();
                 if (!wasPinned) {
                     g_gallery.Close();
                     NotifyGallerySessionEnded();

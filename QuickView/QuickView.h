@@ -11,6 +11,7 @@ struct VisualState {
     
     // 2. Transform Layer
     float TotalRotation;         // 0, 90, 180, 270 (Exif + User)
+    float FreeRotationDeg = 0.0f; // [Feature] free-form rotation from right-drag, degrees
     bool IsRotated90;            // True if 90 or 270
     float FlipX = 1.0f;          // Horizontal Scale (1.0 or -1.0)
     float FlipY = 1.0f;          // Vertical Scale (1.0 or -1.0)

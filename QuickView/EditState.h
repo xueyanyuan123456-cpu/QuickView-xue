@@ -271,6 +271,7 @@ enum class MouseActionTarget : int {
     LockWindowZoomWheel, // Zoom while locking window size
     AdjustZoomSpeedWheel,// Scroll to adjust zoom speed
     CropRegionDrag,      // Define/drag crop region
+    Rotate,              // [Feature] Free-form rotate around image center (right-drag)
     
     // Command Shortcuts (Aligned with HotkeyAction)
     NavNext,             // Next Image
@@ -353,6 +354,7 @@ inline bool IsMouseTriggerActionCompatible(MouseTrigger trig, MouseActionTarget 
         case MouseActionTarget::PanImage:
         case MouseActionTarget::Zoom:
         case MouseActionTarget::CropRegionDrag:
+        case MouseActionTarget::Rotate:
         case MouseActionTarget::Loupe:
             return true;
         default:
@@ -461,7 +463,7 @@ inline std::vector<MouseGestureRule> GetDefaultMouseGestures() {
         // Default unmodified operations (100% QuickView signature feel)
         { 0, 0, (uint8_t)MouseTrigger::LeftDrag,        (int)MouseActionTarget::WindowDrag },
         { 0, 0, (uint8_t)MouseTrigger::MiddleDrag,      (int)MouseActionTarget::PanImage },
-        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Zoom },
+        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Rotate },
         { 0, 0, (uint8_t)MouseTrigger::LeftDblClick,    (int)MouseActionTarget::SmartZoom },
         { 0, 0, (uint8_t)MouseTrigger::MiddleClick,     (int)MouseActionTarget::ExitApp },
         { 0, 0, (uint8_t)MouseTrigger::RightClick,      (int)MouseActionTarget::ContextMenu },
@@ -482,7 +484,7 @@ inline std::vector<MouseGestureRule> GetStandardViewerMouseGestures() {
     return {
         { 0, 0, (uint8_t)MouseTrigger::LeftDrag,        (int)MouseActionTarget::PanImage },
         { 0, 0, (uint8_t)MouseTrigger::MiddleDrag,      (int)MouseActionTarget::WindowDrag },
-        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Zoom },
+        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Rotate },
         { 0, 0, (uint8_t)MouseTrigger::LeftDblClick,    (int)MouseActionTarget::ToggleFullscreen },
         { 0, 0, (uint8_t)MouseTrigger::MiddleClick,     (int)MouseActionTarget::ZoomFit },
         { 0, 0, (uint8_t)MouseTrigger::RightClick,      (int)MouseActionTarget::ContextMenu },
@@ -500,7 +502,7 @@ inline std::vector<MouseGestureRule> GetMinimalBrowserMouseGestures() {
     return {
         { 0, 0, (uint8_t)MouseTrigger::LeftDrag,        (int)MouseActionTarget::PanImage },
         { 0, 0, (uint8_t)MouseTrigger::MiddleDrag,      (int)MouseActionTarget::WindowDrag },
-        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Zoom },
+        { 0, 0, (uint8_t)MouseTrigger::RightDrag,       (int)MouseActionTarget::Rotate },
         { 0, 0, (uint8_t)MouseTrigger::LeftDblClick,    (int)MouseActionTarget::SmartZoom },
         { 0, 0, (uint8_t)MouseTrigger::MiddleClick,     (int)MouseActionTarget::ExitApp },
         { 0, 0, (uint8_t)MouseTrigger::RightClick,      (int)MouseActionTarget::ContextMenu },
@@ -1164,6 +1166,7 @@ struct AppConfig {
     bool ShowOSD = true;
     bool AutoHideWindowControls = true;
     bool LockBottomToolbar = false;
+    bool GalleryPinned = false;        // [Feature] Filmstrip gallery pin state, restored on next launch
     bool EnableCrossMonitor = false; // [Phase 2] Cross-Monitor Spanning
     int ExifPanelMode = 0;              // 0=Off, 1=Lite, 2=Full (startup default)
     int ToolbarInfoDefault = 0;         // 0=Lite, 1=Full (toolbar button default)
@@ -1647,6 +1650,11 @@ struct ViewState {
     float RightDragZoomStartTotalScale = 1.0f;
     float RightDragZoomStartComparePrimaryZoom = 1.0f;
     float RightDragZoomStartCompareSecondaryZoom = 1.0f;
+    // [Feature] Free-form rotation while holding the right mouse button.
+    bool IsRightDragRotate = false;
+    float FreeRotationDeg = 0.0f;
+    float RightDragStartAngle = 0.0f;
+    float RightDragStartRotation = 0.0f;
     POINT WindowDragStart = { 0, 0 }; // Window position at drag start
     POINT CursorDragStart = { 0, 0 }; // Cursor screen position at drag start
     int EdgeHoverState = 0; // -1=Left, 0=None, 1=Right
@@ -1681,6 +1689,10 @@ struct ViewState {
         IsPendingFullscreenExitDrag = false;
         IsDraggingInfoPanel = false;
         InfoPanelDragAnchor = { 0, 0 };
+        IsRightDragRotate = false;
+        FreeRotationDeg = 0.0f;
+        RightDragStartAngle = 0.0f;
+        RightDragStartRotation = 0.0f;
     }
 };
 

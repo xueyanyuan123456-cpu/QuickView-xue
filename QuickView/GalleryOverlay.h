@@ -103,6 +103,14 @@ public:
   // Returns selected index when closed via Enter/Click
   int GetSelectedIndex() const { return m_selectedIndex; }
 
+  // Favorites mode: browse bookmarked images instead of the current folder.
+  void SetFavoritesMode(bool enabled);
+  bool IsFavoritesMode() const { return m_favoritesMode; }
+  int GetItemCount() const;
+  std::wstring GetItemPath(int index) const;
+  ImageID GetItemId(int index) const;
+  std::wstring GetSelectedPath() const;
+
   // Calculate thumbnail index from client coordinates
   int HitTestClient(int x, int y);
 
@@ -229,6 +237,11 @@ private:
   bool m_gridSliderHover = false;
   bool m_gridSliderDragging = false;
   bool m_gridAutoHover = false;
+
+  // Favorites browsing mode
+  bool m_favoritesMode = false;
+  bool m_favHover = false;
+  std::vector<std::wstring> m_favPaths;
 
   // D2D Resources
   ComPtr<ID2D1SolidColorBrush> m_brushBg;

@@ -84,6 +84,7 @@ set(QUICKVIEW_SOURCES
     QuickView/exif.cpp
     QuickView/RatingMetadata.cpp
     QuickView/RatingStore.cpp
+    QuickView/FavoritesStore.cpp
     QuickView/RatingWriter.cpp
     QuickView/RenderEngine.cpp
     QuickView/ImageLoader.cpp
@@ -499,6 +500,7 @@ add_executable(QuickViewTests
     QuickView/RatingMetadata.cpp
     QuickView/RatingWriter.cpp
     QuickView/RatingStore.cpp
+    QuickView/FavoritesStore.cpp
     QuickView/QuickViewETW.cpp
     QuickView/AppStrings.cpp
     QuickView/FileAssociationManager.cpp

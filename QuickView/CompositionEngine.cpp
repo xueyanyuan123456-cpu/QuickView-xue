@@ -1143,8 +1143,9 @@ HRESULT CompositionEngine::UpdateTransformMatrix(VisualState vs, float /*winW*/,
     // [Fix] Apply Flip (Mirroring) relative to center
     D2D1_MATRIX_3X2_F mFlip = D2D1::Matrix3x2F::Scale(vs.FlipX, vs.FlipY);
     
-    // B. Rotate: Around (0,0)
-    D2D1_MATRIX_3X2_F mRotate = D2D1::Matrix3x2F::Rotation(vs.TotalRotation);
+    // B. Rotate: Around (0,0) — fixed 90° steps plus free-form right-drag rotation
+    const float totalAngle = vs.TotalRotation + vs.FreeRotationDeg;
+    D2D1_MATRIX_3X2_F mRotate = D2D1::Matrix3x2F::Rotation(totalAngle);
     
     // Set Model Matrix
     m_currentModelMatrix = mFlip * mRotate;

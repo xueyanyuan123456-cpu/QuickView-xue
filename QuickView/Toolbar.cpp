@@ -6,6 +6,7 @@
 #include "AppContext.h"
 #include "GeekIconRenderer.h"
 #include "FileNavigator.h"
+#include "FavoritesStore.h"
 #include "GalleryOverlay.h"
 #include "SettingsOverlay.h"
 #include "HelpOverlay.h"
@@ -15,6 +16,8 @@ using QuickView::UI::GeekIconRenderer;
 
 extern AppConfig g_config;
 extern FileNavigator& g_navigator;
+extern FavoritesStore g_favorites;
+extern std::wstring& g_imagePath;
 
 namespace Icons = GeekIcons;
 
@@ -29,6 +32,7 @@ Toolbar::Toolbar() {
 
       {ToolbarButtonID::LockSize, Icons::Lock, {}, true, false},
       {ToolbarButtonID::Gallery, Icons::Gallery, {}, true},
+      {ToolbarButtonID::Favorite, Icons::Star, {}, true, false},
 
       {ToolbarButtonID::Exif, Icons::Info, {}, true, false},
       {ToolbarButtonID::RawToggle, Icons::Raw, {}, false, false},
@@ -213,6 +217,7 @@ void Toolbar::UpdateLayout(float winW, float winH) {
       {ToolbarButtonID::FlipH},
       {ToolbarButtonID::LockSize},
       {ToolbarButtonID::Gallery},
+      {ToolbarButtonID::Favorite},
       {ToolbarButtonID::CompareToggle},
       {ToolbarButtonID::Exif},
       {ToolbarButtonID::RotateL, ToolbarButtonID::RotateR},
@@ -247,6 +252,7 @@ void Toolbar::UpdateLayout(float winW, float winH) {
       {ToolbarButtonID::Pin},
       {ToolbarButtonID::LockSize},
       {ToolbarButtonID::Gallery},
+      {ToolbarButtonID::Favorite},
       {ToolbarButtonID::CompareToggle},
       {ToolbarButtonID::Exif},
       {ToolbarButtonID::Prev, ToolbarButtonID::Next},  // Core
@@ -487,6 +493,9 @@ void Toolbar::UpdateLayout(float winW, float winH) {
         btn.isToggled = g_runtime.LockWindowSize;
         btn.iconGlyph = g_runtime.LockWindowSize ? Icons::Lock : Icons::Unlock;
     }
+    if (btn.id == ToolbarButtonID::Favorite) {
+        btn.isToggled = g_favorites.Contains(g_imagePath);
+    }
 
     if (btn.id == ToolbarButtonID::CompareToggle) {
       btn.iconGlyph = Icons::CompareToggle;
@@ -559,6 +568,8 @@ const wchar_t *GetTooltipText(const ToolbarButton &btn) {
                          : AppStrings::g.Toolbar_Tooltip_Lock;
   case ToolbarButtonID::Gallery:
     return AppStrings::g.Toolbar_Tooltip_Gallery;
+  case ToolbarButtonID::Favorite:
+    return btn.isToggled ? L"Remove from favorites" : L"Add to favorites";
   case ToolbarButtonID::Exif:
     return AppStrings::g.Toolbar_Tooltip_Info;
   case ToolbarButtonID::RawToggle:
@@ -1294,6 +1305,10 @@ bool Toolbar::UpdateAnimation() {
 
 void Toolbar::SetLockState(bool locked) {
   for (auto &btn : m_buttons) { if (btn.id == ToolbarButtonID::LockSize) { btn.isToggled = locked; btn.iconGlyph = locked ? Icons::Lock : Icons::Unlock; } }
+}
+
+void Toolbar::SetFavoriteState(bool favorited) {
+  for (auto &btn : m_buttons) { if (btn.id == ToolbarButtonID::Favorite) { btn.isToggled = favorited; } }
 }
 
 void Toolbar::SetExifState(bool open) {

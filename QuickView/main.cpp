@@ -3596,17 +3596,22 @@ static void FinishGallery(HWND hwnd, GalleryFinishKind kind, int commitIndex) {
     if (kind == GalleryFinishKind::Commit) {
         g_savedState.isValid = false;
 
-        // Favorites mode: the selected item lives in the bookmark list, which may
-        // point outside the current folder navigator. Open it directly.
+        // Favorites mode: the bookmark list becomes a self-contained playlist.
+        // Navigation stays within the favorited images and does not jump to the
+        // selected image's containing folder.
         if (g_gallery.IsFavoritesMode()) {
             const std::wstring favPath = g_gallery.GetSelectedPath();
+            const std::vector<std::wstring> favs = g_favorites.List();
             g_gallery.SetFavoritesMode(false);
-            if (!favPath.empty() && favPath != pane.path) {
-                if (g_compEngine && g_compEngine->IsInitialized()) {
-                    g_compEngine->HideActiveImage();
+            if (!favPath.empty()) {
+                pane.navigator.SetExplicitPlaylist(favs, favPath);
+                if (favPath != pane.path) {
+                    if (g_compEngine && g_compEngine->IsInitialized()) {
+                        g_compEngine->HideActiveImage();
+                    }
+                    pane.resource.Reset();
+                    LoadImageAsync(hwnd, favPath.c_str());
                 }
-                pane.resource.Reset();
-                LoadImageAsync(hwnd, favPath.c_str());
             }
             g_gallerySession = {};
             return;
@@ -5063,7 +5068,7 @@ static bool ShouldAutoFullscreenForDimensions(HWND hwnd, UINT imgW, UINT imgH) {
 
 static ImageID g_lastAutoFullscreenImageId = ~(0ULL);
 
-static void ApplyAutoFullscreenPolicy(HWND hwnd, ImageID imageId, const CImageLoader::ImageMetadata& meta) {
+static void ApplyAutoFullscreenPolicy(HWND hwnd, ImageID imageId, const CImageLoader::ImageMetadata& meta, bool allowEnterFullscreen = true) {
     if (g_config.OpenFullScreenMode <= 0 || imageId == g_lastAutoFullscreenImageId) return;
 
     UINT imgW = meta.Width;
@@ -5075,7 +5080,9 @@ static void ApplyAutoFullscreenPolicy(HWND hwnd, ImageID imageId, const CImageLo
     }
 
     const bool shouldFullscreen = ShouldAutoFullscreenForDimensions(hwnd, imgW, imgH);
-    if (shouldFullscreen && !g_isFullScreen) {
+    // [Fix] When switching images from a windowed session, do not force the
+    // viewer into fullscreen; only the startup policy may enter fullscreen.
+    if (shouldFullscreen && !g_isFullScreen && allowEnterFullscreen) {
         SetFullscreenMode(hwnd, true);
     } else if (!shouldFullscreen && g_isFullScreen && g_config.OpenFullScreenMode == 1) {
         SetFullscreenMode(hwnd, false);
@@ -17909,8 +17916,9 @@ void ProcessEngineEvents(HWND hwnd) {
                     ClearGamutWarningState(hwnd);
                 }
 
-                // [Feature] Auto Fullscreen on Open
-                ApplyAutoFullscreenPolicy(hwnd, evt.imageId, GetPaneContext(PaneSlot::Primary).metadata);
+                // [Feature] Auto Fullscreen on Open. Navigation between images
+                // keeps the current windowed state (no forced fullscreen).
+                ApplyAutoFullscreenPolicy(hwnd, evt.imageId, GetPaneContext(PaneSlot::Primary).metadata, false);
 
                 // Force one Titan scheduling pass after content swap.
                 // This prevents "same size, same zoom" switches from skipping

@@ -370,6 +370,7 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd, bool 
     m_pairedRaws.clear();
     m_currentIndex = -1;
     m_playlistReady = false;
+    m_explicitPlaylist = false;
     ClearExplorerCursor();
 
     // [RAW+JPEG Pairing] Verification results belong to one folder
@@ -596,6 +597,7 @@ void FileNavigator::InitializeForBoot(const std::wstring& currentPath, HWND hwnd
     m_pairedRaws.clear();
     m_currentIndex = -1;
     m_playlistReady = false;
+    m_explicitPlaylist = false;
     ClearExplorerCursor();
 
     m_watchedDir = dirStr;
@@ -645,9 +647,9 @@ std::wstring FileNavigator::Next(bool /*unused*/) {
 
     if (m_files.empty()) return L"";
 
-    if (g_runtime.NavTraverse) {
+    if (g_runtime.NavTraverse && !m_explicitPlaylist) {
         bool shouldTraverse = false;
-        
+
         // Case 1: We are at the end of the current playlist
         if (m_currentIndex >= (int)m_files.size() - 1) {
             shouldTraverse = true;
@@ -719,9 +721,9 @@ std::wstring FileNavigator::Previous(bool /*unused*/) {
 
     if (m_files.empty()) return L"";
 
-    if (g_runtime.NavTraverse) {
+    if (g_runtime.NavTraverse && !m_explicitPlaylist) {
         bool shouldTraverse = false;
-        
+
         // Case 1: We are at the beginning of the current playlist
         if (m_currentIndex <= 0) {
             shouldTraverse = true;
@@ -872,6 +874,38 @@ void FileNavigator::SetIndex(int index) {
         m_currentIndex = index;
         m_hitEnd = false;
     }
+}
+
+void FileNavigator::SetExplicitPlaylist(const std::vector<std::wstring>& paths, const std::wstring& current) {
+    // Tear down any folder watcher / Explorer binding / pairing from the previous
+    // folder so the favorites list is browsed as a self-contained playlist.
+    StopPairVerification(true);
+    StopDirectoryWatcher();
+    m_bootDeferredHydration = false;
+    m_archive.reset();
+    m_archivePath.clear();
+
+    m_files.clear();
+    m_sizes.clear();
+    m_ids.clear();
+    m_pairedRaws.clear();
+    ClearExplorerCursor();
+    m_watchedDir.clear();
+    m_needInitialScan = false;
+
+    for (const auto& p : paths) {
+        if (p.empty()) continue;
+        m_files.push_back(p);
+        m_ids.push_back(ComputePathHash(p));
+        m_sizes.push_back(0);
+    }
+
+    m_explicitPlaylist = true;
+    m_playlistReady = true;
+    m_hitEnd = false;
+
+    int idx = FindIndex(current);
+    m_currentIndex = (idx >= 0) ? idx : (m_files.empty() ? -1 : 0);
 }
 
 bool FileNavigator::RemoveAt(int index) {
@@ -1242,6 +1276,7 @@ bool FileNavigator::SyncExplorerCursor(bool allowDematerialize) {
 }
 
 void FileNavigator::SyncWithExplorer() {
+    if (m_explicitPlaylist) return; // favorites playlist: keep user-chosen order
     SyncExplorerCursor(true);
 }
 

@@ -87,6 +87,11 @@ public:
     // Used to open another file in the same folder without re-listing.
     bool TrySelectExisting(const std::wstring& path);
 
+    // Install an explicit, user-chosen playlist (e.g. the favorites list).
+    // Navigation stays within these paths; no folder scan / Explorer binding
+    // replaces the list until a normal file/folder open re-initializes it.
+    void SetExplicitPlaylist(const std::vector<std::wstring>& paths, const std::wstring& current);
+
     // Build the compact on-disk playlist (names-only directory pass).
     // No-op when the list is already materialized or this is an archive.
     // Gallery / explicit sort / pairing need this; Next/Prev in Auto mode
@@ -311,6 +316,7 @@ private:
     std::wstring m_initialBindPath;
     std::optional<ExplorerBindResult> m_pendingExplorerBind;
     bool m_bootDeferredHydration = false;
+    bool m_explicitPlaylist = false;  // Favorites playlist: do not rescan a folder
 
 public:
     std::wstring m_archivePath;
